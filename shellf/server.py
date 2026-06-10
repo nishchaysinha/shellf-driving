@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 import time
 
 from mcp.server.fastmcp import FastMCP, Image
@@ -37,7 +38,7 @@ def _maybe_start_observer() -> None:
     port = os.environ.get("SHELLF_OBSERVE_PORT")
     if port and not observe.hub.active:
         url = observe.start(int(port))
-        print(f"[shellf-driving] observability dashboard: {url}", flush=True)
+        print(f"[shellf-driving] observability dashboard: {url}", file=sys.stderr, flush=True)
 
 
 _maybe_start_observer()
