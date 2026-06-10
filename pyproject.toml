@@ -1,0 +1,16 @@
+[project]
+name = "shellf-driving"
+version = "0.1.0"
+description = "Drive terminal UIs the way Playwright drives browsers — for LLM agents."
+requires-python = ">=3.10"
+dependencies = [
+    "pyte>=0.8.1",
+    "mcp[cli]>=1.2.0",
+]
+
+[project.scripts]
+shellf = "shellf.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

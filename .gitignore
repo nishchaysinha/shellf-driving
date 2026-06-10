@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtualenv
+.venv/
+venv/
+
+# Editor / OS
+*.swp
+*.swo
+.DS_Store
+
+# Local artifacts
+*.png
