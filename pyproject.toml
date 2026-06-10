@@ -2,6 +2,8 @@
 name = "shellf-driving"
 version = "0.1.0"
 description = "Drive terminal UIs the way Playwright drives browsers — for LLM agents."
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "pyte>=0.8.1",

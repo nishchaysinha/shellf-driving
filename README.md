@@ -100,3 +100,7 @@ claude mcp add shellf-driving -- "$PWD/.venv/bin/python" -m shellf.server
 .venv/bin/python test_decckm_e2e.py    # proves arrows arrive as ESC O x under DECCKM
 .venv/bin/python test_mcp_client.py    # drives the MCP server over stdio
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
