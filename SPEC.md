@@ -151,7 +151,8 @@ These are not features — they're places where the current engine can silently 
 | pip / editable install | ✅ | — | |
 | Standalone CLI (manual poke/REPL) | ⬜ | P1 | Drive a session by hand for debugging |
 | Config (default size/TERM/timeouts) | ⬜ | P2 | Central settings |
-| Structured logging / verbosity | ⬜ | P2 | Debug agent runs |
+| **Live observability dashboard** | ✅ | — | `observe.py`: localhost web UI, xterm.js byte-mirror per session + tool-call timeline (SHELLF_OBSERVE_PORT). Browser resize = CSS scale-to-fit; session resize = grid event |
+| Structured logging / verbosity | 🟡 | P2 | The observe event stream is a start; no file logger yet |
 | pytest plugin (fixtures) | ⬜ | P2 | For the testing use case |
 | Remote/containerized targets (docker/ssh) | ⬜ | P2 | Drive a TUI in another env |
 | Windows (ConPTY) | ⬜ | P2 | Big lift; Unix-only today |

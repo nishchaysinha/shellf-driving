@@ -13,11 +13,13 @@ Run it:
 
 from __future__ import annotations
 
+import functools
+import os
 import time
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from . import keys, shortcuts
+from . import keys, observe, shortcuts
 from .render import Renderer
 from .terminal import TerminalSession
 
@@ -28,6 +30,52 @@ _sessions: dict[str, TerminalSession] = {}
 
 # One cached renderer (fonts/metrics) shared across screenshot calls.
 _renderer = Renderer()
+
+
+# --- Observability dashboard (opt-in via SHELLF_OBSERVE_PORT) --------------- #
+def _maybe_start_observer() -> None:
+    port = os.environ.get("SHELLF_OBSERVE_PORT")
+    if port and not observe.hub.active:
+        url = observe.start(int(port))
+        print(f"[shellf-driving] observability dashboard: {url}", flush=True)
+
+
+_maybe_start_observer()
+
+
+def _wire_observer(name: str, ts: TerminalSession) -> None:
+    """Stream a session's PTY bytes / resizes / exit to the dashboard."""
+    if not observe.hub.active:
+        return
+    observe.hub.register_session(name, ts.cols, ts.rows, ts.command)
+    ts.on_output = lambda data, n=name: observe.hub.publish_output(n, data)
+    ts.on_resize = lambda c, r, n=name, cmd=ts.command: observe.hub.register_session(n, c, r, cmd)
+    ts.on_exit = lambda status, n=name: observe.hub.mark_exited(n, status)
+
+
+def _summarize_args(kwargs: dict) -> dict:
+    """Compact, safe view of a tool call's args for the timeline."""
+    out = {}
+    for k, v in kwargs.items():
+        if isinstance(v, str) and len(v) > 60:
+            v = v[:60] + "…"
+        out[k] = v
+    return out
+
+
+def observed(fn):
+    """Publish a tool-call event to the dashboard, preserving the signature so
+    FastMCP still derives the correct schema (inspect.signature follows __wrapped__)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if observe.hub.active:
+            observe.hub.publish_event({
+                "kind": "tool", "name": fn.__name__,
+                "session": kwargs.get("session", "default"),
+                "args": _summarize_args(kwargs),
+            })
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 def _get(session: str) -> TerminalSession:
@@ -72,6 +120,7 @@ def _act(ts: TerminalSession, send, quiet: float = 0.12, timeout: float = 2.0) -
 
 
 @mcp.tool()
+@observed
 def launch(
     command: str,
     args: list[str] | None = None,
@@ -94,18 +143,21 @@ def launch(
         raise ValueError(f"Session {session!r} is already running. Kill it first.")
     ts = TerminalSession(command, args=args, cols=cols, rows=rows, cwd=cwd)
     _sessions[session] = ts
+    _wire_observer(session, ts)
     # Wait for the first paint to settle (programs often need a query answered first).
     ts.wait_for_stable(quiet=settle, timeout=max(2.0, settle * 5), since_version=0)
     return _render(ts)
 
 
 @mcp.tool()
+@observed
 def snapshot(session: str = "default") -> str:
     """Return the current screen contents (the 'what does it look like now' tool)."""
     return _render(_get(session))
 
 
 @mcp.tool()
+@observed
 def screenshot(session: str = "default") -> Image:
     """Return a PNG image of the terminal — colors, bold, the block cursor outline,
     and a red marker where the mouse last acted.
@@ -119,6 +171,7 @@ def screenshot(session: str = "default") -> Image:
 
 
 @mcp.tool()
+@observed
 def type_text(text: str, session: str = "default", settle: float = 0.12) -> str:
     """Type literal text into the program, then return the updated screen.
 
@@ -129,6 +182,7 @@ def type_text(text: str, session: str = "default", settle: float = 0.12) -> str:
 
 
 @mcp.tool()
+@observed
 def press(
     keys_: list[str],
     session: str = "default",
@@ -150,6 +204,7 @@ def press(
 
 
 @mcp.tool()
+@observed
 def shortcut(
     app: str,
     name: str,
@@ -169,6 +224,7 @@ def shortcut(
 
 
 @mcp.tool()
+@observed
 def list_shortcuts(app: str | None = None) -> dict:
     """List known application shortcuts (all apps, or just `app`).
 
@@ -183,6 +239,7 @@ def list_shortcuts(app: str | None = None) -> dict:
 
 
 @mcp.tool()
+@observed
 def define_shortcut(app: str, name: str, keys_: list[str]) -> dict:
     """Register a custom shortcut so it can be invoked later via `shortcut`.
 
@@ -194,6 +251,7 @@ def define_shortcut(app: str, name: str, keys_: list[str]) -> dict:
 
 
 @mcp.tool()
+@observed
 def mouse(
     action: str,
     x: int,
@@ -221,6 +279,7 @@ def mouse(
 
 
 @mcp.tool()
+@observed
 def wait_for_text(
     text: str,
     session: str = "default",
@@ -239,6 +298,7 @@ def wait_for_text(
 
 
 @mcp.tool()
+@observed
 def wait_for_stable(
     session: str = "default",
     quiet: float = 0.3,
@@ -257,12 +317,14 @@ def wait_for_stable(
 
 
 @mcp.tool()
+@observed
 def find_text(text: str, session: str = "default") -> list[dict]:
     """Return every (x, y) coordinate where `text` appears (useful before a click)."""
     return _get(session).find_text(text)
 
 
 @mcp.tool()
+@observed
 def read_history(session: str = "default", max_lines: int = 200) -> str:
     """Return scrolled-off output (scrollback), oldest→newest, up to max_lines.
 
@@ -276,6 +338,7 @@ def read_history(session: str = "default", max_lines: int = 200) -> str:
 
 
 @mcp.tool()
+@observed
 def get_modes(session: str = "default") -> dict:
     """Return the terminal modes the program has enabled (sniffed from its output).
 
@@ -287,6 +350,7 @@ def get_modes(session: str = "default") -> dict:
 
 
 @mcp.tool()
+@observed
 def resize(cols: int, rows: int, session: str = "default") -> str:
     """Resize the terminal (sends SIGWINCH). Returns the reflowed screen."""
     ts = _get(session)
@@ -294,6 +358,7 @@ def resize(cols: int, rows: int, session: str = "default") -> str:
 
 
 @mcp.tool()
+@observed
 def kill(session: str = "default") -> str:
     """Terminate the program in a session."""
     ts = _get(session)
@@ -303,6 +368,7 @@ def kill(session: str = "default") -> str:
 
 
 @mcp.tool()
+@observed
 def list_sessions() -> list[dict]:
     """List active sessions and their state."""
     return [

@@ -126,6 +126,10 @@ class TerminalSession:
         # Repaint tracking, for wait_for_stable.
         self._version = 0
         self._last_change = time.monotonic()
+        # Optional observer callbacks (set by the server when the dashboard is on).
+        self.on_output = None   # (data: bytes) -> None : raw PTY bytes, for mirroring
+        self.on_resize = None   # (cols, rows) -> None
+        self.on_exit = None     # (status) -> None
 
         argv = [command, *self.args]
 
@@ -182,6 +186,12 @@ class TerminalSession:
                 # Sniff mode changes and answer queries (after feeding, so the
                 # cursor-position report reflects the program's latest cursor move).
                 self._scan_output(data)
+            # Mirror the raw bytes to any observer (outside the lock).
+            if self.on_output:
+                try:
+                    self.on_output(data)
+                except Exception:
+                    pass
 
         with self._lock:
             self._alive = False
@@ -190,6 +200,11 @@ class TerminalSession:
             self.exit_status = os.waitstatus_to_exitcode(status)
         except OSError:
             pass
+        if self.on_exit:
+            try:
+                self.on_exit(self.exit_status)
+            except Exception:
+                pass
 
     def _scan_output(self, data: bytes) -> None:
         """Track mode changes and answer terminal queries. Called under lock."""
@@ -217,6 +232,11 @@ class TerminalSession:
         with self._lock:
             self.rows, self.cols = rows, cols
             self.screen.resize(rows, cols)
+        if self.on_resize:
+            try:
+                self.on_resize(cols, rows)
+            except Exception:
+                pass
 
     def kill(self, sig: int = signal.SIGTERM) -> None:
         """Signal the program to terminate."""

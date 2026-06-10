@@ -81,6 +81,31 @@ Many TUIs use a prefix key followed by more keys — tmux `Ctrl+B d`, screen
 `resize(cols, rows)` sends a real `SIGWINCH` to the program and resizes the emulator,
 so the TUI reflows exactly as it would when you drag a terminal window edge.
 
+## Live observability dashboard
+
+So a human can watch what the agent is doing, the server can serve a local web page
+with a **pixel-perfect live mirror** of each session plus a timeline of every MCP tool
+call. The mirror tees the raw PTY bytes straight into xterm.js — same bytes the app
+emits — so it's exact, not a re-render.
+
+```bash
+SHELLF_OBSERVE_PORT=7331 python -m shellf.server     # then open http://127.0.0.1:7331
+```
+
+Off by default; binds to `127.0.0.1` only. To enable it for the MCP server:
+
+```bash
+claude mcp add shellf-driving -e SHELLF_OBSERVE_PORT=7331 -- "$PWD/.venv/bin/python" -m shellf.server
+```
+
+A byte-mirror is dimensionally rigid — the app draws for an exact `cols×rows`, so the
+dashboard terminal is **locked to the PTY's grid**, never the browser window:
+
+- **Browser window resize** → the fixed-grid terminal is scaled to fit (letterboxed);
+  cols/rows are never changed, so the mirror can't desync.
+- **Session resize** (agent calls `resize` → SIGWINCH) → the engine emits a resize
+  event and the dashboard `resize()`s xterm to the new grid, then re-fits.
+
 ## Setup
 
 ```bash
