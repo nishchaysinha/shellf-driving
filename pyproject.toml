@@ -8,6 +8,7 @@ requires-python = ">=3.10"
 dependencies = [
     "pyte>=0.8.1",
     "mcp[cli]>=1.2.0",
+    "Pillow>=9.0.0",
 ]
 
 [project.scripts]
