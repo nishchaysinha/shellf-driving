@@ -5,13 +5,14 @@ the image content type returned by the `screenshot` tool.
 """
 import asyncio
 import base64
+import sys
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
 async def main():
-    params = StdioServerParameters(command=".venv/bin/python", args=["-m", "shellf.server"])
+    params = StdioServerParameters(command=sys.executable, args=["-m", "shellf.server"])
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -26,7 +27,7 @@ async def main():
 
             await session.call_tool("type_text", {"text": "i"})
             await session.call_tool("type_text", {"text": "driven over MCP by an LLM"})
-            await session.call_tool("press", {"keys_": ["escape"]})
+            await session.call_tool("press", {"keys": ["escape"]})
 
             r = await session.call_tool("snapshot", {})
             assert "driven over MCP by an LLM" in r.content[0].text, "text not on screen"
@@ -39,9 +40,14 @@ async def main():
             open("/tmp/mcp_vim.png", "wb").write(png)
             print(f"[screenshot] got {img.mimeType}, {len(png)} bytes -> /tmp/mcp_vim.png")
 
-            await session.call_tool("press", {"keys_": ["escape"]})
+            await session.call_tool("press", {"keys": ["escape"]})
             await session.call_tool("type_text", {"text": ":q!\n"})
             print("\nMCP CLIENT TEST PASSED")
 
 
-asyncio.run(main())
+def test_mcp_client():
+    asyncio.run(main())
+
+
+if __name__ == "__main__":
+    test_mcp_client()

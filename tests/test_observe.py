@@ -73,9 +73,15 @@ def main():
           b"hello-observe-XYZ" in decoded)
 
     S.kill(session="demo")
-    print("\nOBSERVE TEST PASSED" if (
-        "text" in props and b"hello-observe-XYZ" in decoded and "xterm" in html
-    ) else "\nOBSERVE TEST FAILED")
+    assert "text" in props, "type_text schema lost its params"
+    assert "xterm" in html, "dashboard page missing xterm"
+    assert b"hello-observe-XYZ" in decoded, "output stream did not mirror the PTY"
+    print("\nOBSERVE TEST PASSED")
 
 
-main()
+def test_observe():
+    main()
+
+
+if __name__ == "__main__":
+    main()

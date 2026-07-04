@@ -25,9 +25,12 @@ equivalent. Shellf-Driving is that layer: the "browser + page" for text UIs.
 
 ```
 shellf/
-  terminal.py   PTY host + pyte screen emulation + key & mouse input
-  keys.py       key-name → terminal escape-sequence map
+  terminal.py   PTY host + pyte screen emulation + key/mouse/paste input
+  modes.py      DEC private-mode sniffer + terminal-query auto-responder
+  keys.py       key-name → terminal escape-sequence map (DECCKM-aware)
+  shortcuts.py  named prefix-chord registry (tmux, screen, emacs, vim, …)
   render.py     screen → PNG (colors, bold, cursor outline, mouse marker)
+  observe.py    live observability dashboard (SSE + xterm.js byte mirror)
   server.py     FastMCP server exposing the tools
 ```
 
@@ -43,10 +46,10 @@ shellf/
 
 ## MCP tools
 
-`launch` · `snapshot` · `screenshot` · `type_text` · `press` · `mouse` ·
+`launch` · `snapshot` · `screenshot` · `type_text` · `press` · `mouse` · `click_text` ·
 `shortcut` · `list_shortcuts` · `define_shortcut` ·
-`wait_for_text` · `wait_for_stable` · `find_text` · `read_history` · `get_modes` ·
-`resize` · `kill` · `list_sessions`
+`wait_for_text` · `wait_for_text_gone` · `wait_for_stable` · `find_text` ·
+`read_history` · `get_modes` · `resize` · `kill` · `list_sessions`
 
 Multiple named sessions run at once, so an agent can juggle several TUIs.
 
@@ -64,6 +67,26 @@ What makes the agent reliable inside *real* apps, not just toy demos:
 - **Auto-wait**: every action tool captures a repaint baseline, then waits for *its own*
   change to settle (`wait_for_stable`) before returning — Playwright-style, no fixed sleeps.
 - **Scrollback**: `HistoryScreen` retains output that scrolled off; `read_history` reads it.
+
+### Correctness, continued (Phase 2)
+
+Fixes born from long, real agent sessions driving vim, Claude Code, and other
+modern TUIs through the server:
+
+- **Bracketed paste**: multi-line `type_text` is auto-delivered as a bracketed paste
+  (`ESC[200~…201~`) when the app has enabled paste mode — editors insert it verbatim
+  instead of autoindent-mangling every line. Force with `paste=true/false`.
+- **Kitty keyboard protocol (CSI-u)**: modern TUIs (Claude Code, neovim, fish) emit
+  progressive-enhancement sequences pyte mis-parses, leaving `1;1u` garbage on the
+  screen. They're now stripped — even when split across read boundaries — and the
+  `CSI ? u` support query is correctly left unanswered so apps fall back to legacy keys.
+- **Kill that actually kills**: interactive shells ignore SIGTERM, which used to leave
+  immortal sessions blocking their name. `kill` now waits for real death, escalates to
+  SIGKILL, and offers `sig: term|int|hup|quit|kill`.
+- **`click_text("OK")`**: find text on screen and click its center — no coordinate math.
+- **`wait_for_text_gone`**: wait for a spinner/“Loading…” to clear.
+- **Token-efficient snapshots**: trailing whitespace and blank rows are trimmed from
+  every returned screen (the header keeps the true cols×rows).
 
 ### Sequential shortcuts (prefix chords)
 
@@ -87,6 +110,11 @@ So a human can watch what the agent is doing, the server can serve a local web p
 with a **pixel-perfect live mirror** of each session plus a timeline of every MCP tool
 call. The mirror tees the raw PTY bytes straight into xterm.js — same bytes the app
 emits — so it's exact, not a re-render.
+
+The timeline shows each call's **arguments, duration, and result** (first line of the
+returned screen), with errors highlighted; click an entry to expand the full args.
+Live counters track calls / errors / sessions plus per-tool call counts, a filter box
+narrows the stream, and session tabs carry live/dead status and the current grid size.
 
 ```bash
 SHELLF_OBSERVE_PORT=7331 python -m shellf.server     # then open http://127.0.0.1:7331
@@ -118,13 +146,22 @@ claude mcp add shellf-driving -- "$PWD/.venv/bin/python" -m shellf.server
 
 ## Tests
 
+Everything runs against *real programs* (bash, vim, htop, tmux) — no mocks:
+
 ```bash
-.venv/bin/python test_engine.py        # drives bash, vim, htop directly
-.venv/bin/python test_shortcuts.py     # resize reflow + tmux prefix chords
-.venv/bin/python test_phase1.py        # mode-sniffer, query responder, stable, history
-.venv/bin/python test_decckm_e2e.py    # proves arrows arrive as ESC O x under DECCKM
-.venv/bin/python test_mcp_client.py    # drives the MCP server over stdio
+pip install -e ".[dev]"
+pytest
 ```
+
+| File | Covers |
+| --- | --- |
+| `tests/test_engine.py` | drives bash, vim, htop directly (keys, mouse, alt-screen) |
+| `tests/test_shortcuts.py` | resize reflow + tmux prefix chords |
+| `tests/test_phase1.py` | mode-sniffer, query responder, wait_for_stable, scrollback |
+| `tests/test_phase2.py` | kitty CSI-u stripping, bracketed paste, kill escalation |
+| `tests/test_decckm_e2e.py` | proves arrows arrive as `ESC O x` under DECCKM |
+| `tests/test_mcp_client.py` / `test_mcp_drive.py` | full round-trip over MCP stdio |
+| `tests/test_observe.py` | dashboard: schema integrity + live SSE data flow |
 
 ## License
 

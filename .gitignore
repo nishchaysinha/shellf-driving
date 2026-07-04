@@ -17,3 +17,5 @@ venv/
 
 # Local artifacts
 *.png
+*.swn
+*.swm

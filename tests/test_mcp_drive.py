@@ -6,6 +6,7 @@ JSON-RPC to the server: launch, get_modes, type_text, press, shortcut, screensho
 """
 import asyncio
 import base64
+import sys
 import json
 import os
 
@@ -30,7 +31,7 @@ def data_of(result):
 async def main():
     if os.path.exists(OUT):
         os.remove(OUT)
-    params = StdioServerParameters(command=".venv/bin/python", args=["-m", "shellf.server"])
+    params = StdioServerParameters(command=sys.executable, args=["-m", "shellf.server"])
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -50,11 +51,11 @@ async def main():
             print("[get_modes]:", {k: v for k, v in modes.items() if v})
 
             # 3. enter insert mode, type content, leave insert
-            await session.call_tool("press", {"keys_": ["i"]})
+            await session.call_tool("press", {"keys": ["i"]})
             for line in ["# written by an LLM through MCP", "",
                          "def hello():", "    return 'shellf-driving'"]:
                 await session.call_tool("type_text", {"text": line + "\n"})
-            await session.call_tool("press", {"keys_": ["escape"]})
+            await session.call_tool("press", {"keys": ["escape"]})
 
             # 4. screenshot via MCP (image content type) -> save for visual check
             r = await session.call_tool("screenshot", {})
@@ -77,4 +78,9 @@ async def main():
     print("MCP DRIVE TEST PASSED — vim driven over MCP wrote a real file")
 
 
-asyncio.run(main())
+def test_mcp_drive():
+    asyncio.run(main())
+
+
+if __name__ == "__main__":
+    test_mcp_drive()

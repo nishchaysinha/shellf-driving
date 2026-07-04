@@ -36,5 +36,9 @@ def main():
     print("\nDECCKM E2E PASSED — arrows correctly sent as ESC O x inside the app")
 
 
+def test_decckm_e2e():
+    main()
+
+
 if __name__ == "__main__":
     main()

@@ -19,7 +19,13 @@ These are not features — they're places where the current engine can silently 
 > under DECCKM (proven end-to-end); query auto-responder answers DA/DSR so apps don't
 > hang; `wait_for_stable` + baseline-version **auto-wait** baked into every action tool;
 > scrollback via `HistoryScreen` (`read_history`); Alt/Meta keys. New MCP tools:
-> `wait_for_stable`, `read_history`, `get_modes`. See `test_phase1.py`, `test_decckm_e2e.py`.
+> `wait_for_stable`, `read_history`, `get_modes`. See `tests/test_phase1.py`, `tests/test_decckm_e2e.py`.
+>
+> **✅ Phase 2 shipped** (fixes surfaced by long real-agent sessions): bracketed-paste
+> `type_text` (auto for multi-line) · kitty CSI-u sequences stripped (no `1;1u` screen
+> garbage from Claude Code/neovim) · `kill` waits + escalates past ignored SIGTERM ·
+> `click_text` · `wait_for_text_gone` · trimmed (token-cheap) snapshots · richer
+> dashboard timeline (durations, results, errors, filtering). See `tests/test_phase2.py`.
 
 | Gap | Why it bites | Pri |
 | --- | --- | --- |
@@ -43,7 +49,7 @@ These are not features — they're places where the current engine can silently 
 | Region / bounding-box read | ⬜ | P1 | Read a sub-rectangle (e.g. a status bar or a pane) |
 | **Scrollback / history buffer** | ✅ | — | `HistoryScreen` + `read_history` exposes output that scrolled off (verified). |
 | Screen **diff** since last snapshot | ⬜ | P1 | Return only changed lines/cells → token-efficient, shows the model *what just happened* |
-| Trim/compact representation | 🟡 | P1 | Strip trailing blank rows/cols to save tokens |
+| Trim/compact representation | ✅ | — | every `_render` strips trailing blank rows/cols |
 | Grid-coordinate overlay on screenshot | ⬜ | P1 | Ruler/gridlines so the model can pick click coords accurately |
 | Terminal **title** capture (OSC 0/2) | ⬜ | P2 | Apps set the title to convey state |
 | **Hyperlinks** (OSC 8) capture | ⬜ | P2 | Modern TUIs emit clickable links |
@@ -65,7 +71,7 @@ These are not features — they're places where the current engine can silently 
 | Mouse **drag** helper | ⬜ | P1 | press→move(s)→release in one call (text selection, sliders) |
 | Double / triple click | ⬜ | P1 | Word/line selection |
 | Mouse modifiers (ctrl/shift+click) | ⬜ | P2 | Modifier bits in the SGR button code |
-| **Bracketed paste** | ⬜ | P1 | Wrap text in `ESC[200~…ESC[201~` so editors don't auto-indent |
+| **Bracketed paste** | ✅ | — | `type_text` auto-pastes multi-line text when the app enabled mode 2004; `paste` param to force |
 | Human-like typing cadence | ⬜ | P2 | Per-char delay; some TUIs drop fast input |
 | Raw byte injection | ⬜ | P1 | Escape hatch: send arbitrary bytes |
 | Focus in/out events | ⬜ | P2 | `ESC[I`/`ESC[O`; some apps redraw on focus |
@@ -76,10 +82,10 @@ These are not features — they're places where the current engine can silently 
 | --- | --- | --- | --- |
 | `wait_for_text` | ✅ | — | |
 | **`wait_for_stable`** (idle N ms) | ✅ | — | See §0 |
-| `wait_for_text_gone` | ⬜ | P1 | Spinner/“Loading…” disappears |
+| `wait_for_text_gone` | ✅ | — | tool + engine method |
 | `wait_for_regex` | ⬜ | P1 | Match patterns, not just substrings |
 | `wait_for_cursor` (position) | ⬜ | P2 | Some apps signal readiness via cursor |
-| `wait_for_exit` | 🟡 | P1 | Engine knows exit status; no explicit wait tool |
+| `wait_for_exit` | ✅ | — | engine method; `kill` waits for real death before returning |
 | Auto-wait baked into actions | ✅ | — | Every action tool waits for its own repaint to settle (baseline-version) |
 
 ## 4. Session & lifecycle
@@ -88,7 +94,7 @@ These are not features — they're places where the current engine can silently 
 | --- | --- | --- | --- |
 | Launch w/ args, env, cwd, size | ✅ | — | `launch` |
 | Multiple named sessions | ✅ | — | |
-| Kill / signal | 🟡 | P1 | `kill` sends SIGTERM; expose SIGINT/SIGTSTP/SIGKILL choice |
+| Kill / signal | ✅ | — | `sig: term|int|hup|quit|kill`, waits for death, auto-escalates to SIGKILL (shells ignore SIGTERM) |
 | Restart session | ⬜ | P2 | Relaunch same spec |
 | Process info (pid/tree/alive) | 🟡 | P2 | `list_sessions` has some; add pid/children |
 | Auto-cleanup / idle timeout | ⬜ | P1 | Reap zombies, cap session lifetime |
@@ -115,7 +121,8 @@ These are not features — they're places where the current engine can silently 
 | DECCKM application cursor keys | ✅ | — | mode-sniffer + ESC O x; proven e2e |
 | Query auto-responder (DA/DSR/…) | ✅ | — | answers primary/secondary DA, DSR 5/6 |
 | Alternate screen buffer | ✅ | — | HardenedScreen implements the 47/1047/1049 buffer save+restore pyte lacks; shell restores after vim/grotto exit (verified) |
-| Bracketed-paste mode tracking | ⬜ | P1 | Know when the app enabled it |
+| Bracketed-paste mode tracking | ✅ | — | sniffed (mode 2004); drives auto-paste in `type_text` |
+| Kitty keyboard protocol (CSI-u) | ✅ | — | sequences stripped before pyte (no more `1;1u` screen garbage); support query deliberately unanswered so apps fall back to legacy keys |
 | Mouse-mode tracking | ✅ | — | `get_modes`; mouse tool warns if reporting is off |
 | Tab stops / charsets | 🟡 | P2 | pyte default; rarely an issue |
 
@@ -124,8 +131,8 @@ These are not features — they're places where the current engine can silently 
 | Capability | Status | Pri | Notes |
 | --- | --- | --- | --- |
 | Observe-after-act (return screen each action) | ✅ | — | Every tool returns the new screen |
-| High-level `click_text("OK")` | ⬜ | P1 | Find text → click its center; removes coord math |
-| Token-efficient snapshots | 🟡 | P1 | Trim + optional diff mode |
+| High-level `click_text("OK")` | ✅ | — | occurrence picker; warns when mouse reporting is off |
+| Token-efficient snapshots | ✅ | — | trailing blanks/rows trimmed on every returned screen; diff mode still ⬜ |
 | Annotated screenshots (coord grid) | ⬜ | P1 | Helps the model aim the mouse |
 | Semantic/“accessibility” extraction | ⬜ | P2 | Detect menus/buttons/tables as structures — hard, high value |
 | Per-action auto-retry + auto-wait | ⬜ | P1 | Fewer flaky agent steps |
@@ -139,14 +146,14 @@ These are not features — they're places where the current engine can silently 
 | Thread-safe screen access | ✅ | — | RLock |
 | Timeouts on all blocking ops | 🟡 | P1 | `wait_for_text` yes; audit the rest |
 | Output backpressure | ⬜ | P1 | See §4 |
-| Zombie/orphan reaping | ⬜ | P1 | Ensure killed sessions fully die |
+| Zombie/orphan reaping | ✅ | — | `kill` escalates + waitpid reaps; session name freed for relaunch |
 | Sandboxing / allowed-command policy | ⬜ | P2 | Restrict what an agent may launch |
 
 ## 9. Deployment & integration
 
 | Capability | Status | Pri | Notes |
 | --- | --- | --- | --- |
-| MCP server | ✅ | — | 14 tools |
+| MCP server | ✅ | — | 19 tools |
 | Python library API | ✅ | — | `TerminalSession` |
 | pip / editable install | ✅ | — | |
 | Standalone CLI (manual poke/REPL) | ⬜ | P1 | Drive a session by hand for debugging |
