@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Per-session replay buffer cap (bytes) and global event history cap.
 _BUFFER_CAP = 512 * 1024
-_EVENT_HISTORY = 200
+_EVENT_HISTORY = 500
 
 
 class EventHub:
@@ -232,46 +232,91 @@ _INDEX_HTML = r"""<!doctype html>
   :root{color-scheme:dark}
   *{box-sizing:border-box}
   body{margin:0;font-family:ui-monospace,Menlo,monospace;background:#0b0b0f;color:#ddd;height:100vh;display:flex;flex-direction:column}
-  header{padding:8px 14px;background:#16161f;border-bottom:1px solid #2a2a3a;display:flex;align-items:center;gap:10px}
+  header{padding:8px 14px;background:#16161f;border-bottom:1px solid #2a2a3a;display:flex;align-items:center;gap:14px}
   header b{color:#a78bfa}
+  #stats{display:flex;gap:12px;font-size:12px;color:#8a8aa0}
+  #stats b{color:#c4b5fd;font-weight:600}
+  #stats .err b{color:#f87171}
+  #status{margin-left:auto;font-size:12px;color:#677}
   #wrap{flex:1;display:flex;min-height:0}
   #left{flex:1;display:flex;flex-direction:column;min-width:0}
   #tabs{display:flex;gap:6px;padding:6px 10px;background:#101018;overflow-x:auto}
-  .tab{padding:4px 10px;border-radius:6px;background:#1d1d2a;cursor:pointer;white-space:nowrap;font-size:13px}
+  .tab{padding:4px 10px;border-radius:6px;background:#1d1d2a;cursor:pointer;white-space:nowrap;font-size:13px;display:flex;align-items:center;gap:6px}
   .tab.active{background:#7c3aed;color:#fff}
-  .tab.dead{opacity:.5}
+  .tab .dot{width:7px;height:7px;border-radius:50%;background:#22c55e;flex:none}
+  .tab.dead .dot{background:#ef4444}
+  .tab.dead{opacity:.6}
+  .tab .sz{color:#889;font-size:11px}
+  .tab.active .sz{color:#ddd}
   #terms{flex:1;position:relative;background:#000;min-height:0;overflow:hidden}
   .term{position:absolute;inset:0;display:none;align-items:center;justify-content:center;overflow:hidden}
   .term.active{display:flex}
   .scaler{transform-origin:center center}
-  #log{width:380px;background:#0e0e16;border-left:1px solid #2a2a3a;display:flex;flex-direction:column}
-  #log h3{margin:0;padding:8px 12px;font-size:12px;color:#888;border-bottom:1px solid #2a2a3a;letter-spacing:.08em}
+  #log{width:430px;background:#0e0e16;border-left:1px solid #2a2a3a;display:flex;flex-direction:column}
+  #logbar{display:flex;gap:6px;align-items:center;padding:7px 10px;border-bottom:1px solid #2a2a3a}
+  #logbar h3{margin:0;font-size:12px;color:#888;letter-spacing:.08em;flex:none}
+  #filter{flex:1;min-width:0;background:#15151f;border:1px solid #2a2a3a;border-radius:5px;color:#ddd;
+          font:inherit;font-size:12px;padding:3px 8px;outline:none}
+  #filter:focus{border-color:#7c3aed}
+  #clear{background:#1d1d2a;border:1px solid #2a2a3a;color:#889;border-radius:5px;cursor:pointer;
+         font:inherit;font-size:11px;padding:3px 8px}
+  #clear:hover{color:#ddd}
   #events{flex:1;overflow:auto;padding:6px 8px;font-size:12px}
-  .ev{padding:5px 7px;border-radius:5px;margin-bottom:4px;background:#15151f;border-left:3px solid #7c3aed}
+  .ev{padding:5px 7px;border-radius:5px;margin-bottom:4px;background:#15151f;border-left:3px solid #7c3aed;cursor:pointer}
   .ev.sess{border-left-color:#22c55e}
-  .ev .nm{color:#a78bfa;font-weight:600}
-  .ev .ar{color:#9aa;word-break:break-all}
+  .ev.err{border-left-color:#ef4444;background:#1c1016}
+  .ev .nm{font-weight:600;color:#a78bfa}
+  .ev.err .nm{color:#f87171}
+  .ev .sn{color:#5eead4;font-size:11px;margin-left:6px}
+  .ev .ms{color:#eab308;font-size:11px;margin-left:6px}
   .ev .tm{color:#556;float:right}
-  #status{margin-left:auto;font-size:12px;color:#677}
+  .ev .rs{display:block;color:#7a7a90;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ev .er{display:block;color:#f87171;margin-top:2px;word-break:break-all}
+  .ev .ar{display:none;color:#9aa;word-break:break-all;margin-top:3px;padding-top:3px;border-top:1px dashed #2a2a3a}
+  .ev.open .ar{display:block}
+  .ev.open .rs{white-space:normal}
+  #toolbar-counts{padding:5px 10px;border-top:1px solid #2a2a3a;font-size:11px;color:#667;
+                  display:flex;gap:10px;flex-wrap:wrap;max-height:56px;overflow:auto}
+  #toolbar-counts b{color:#998}
 </style></head>
 <body>
-<header><b>Shellf-Driving</b> live observability <span id="status">connecting…</span></header>
+<header>
+  <b>Shellf-Driving</b> live observability
+  <div id="stats">
+    <span>calls <b id="n-calls">0</b></span>
+    <span class="err">errors <b id="n-errors">0</b></span>
+    <span>sessions <b id="n-sessions">0</b></span>
+  </div>
+  <span id="status">connecting…</span>
+</header>
 <div id="wrap">
   <div id="left">
     <div id="tabs"></div>
     <div id="terms"></div>
   </div>
-  <div id="log"><h3>MCP TOOL CALLS</h3><div id="events"></div></div>
+  <div id="log">
+    <div id="logbar">
+      <h3>TOOL CALLS</h3>
+      <input id="filter" placeholder="filter: tool, session, args…" spellcheck="false">
+      <button id="clear" title="Clear the timeline">clear</button>
+    </div>
+    <div id="events"></div>
+    <div id="toolbar-counts"></div>
+  </div>
 </div>
 <script>
-const terms = {};       // name -> {term, el, streamES, meta}
+const terms = {};       // name -> {term, el, scaler, es, meta}
 let active = null;
+let nCalls = 0, nErrors = 0;
+const toolCounts = {};  // tool name -> count
 const tabsEl = document.getElementById('tabs');
 const termsEl = document.getElementById('terms');
 const eventsEl = document.getElementById('events');
 const statusEl = document.getElementById('status');
+const filterEl = document.getElementById('filter');
 
 function fmtTime(ts){const d=new Date(ts*1000);return d.toLocaleTimeString();}
+function escapeHtml(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 
 function selectTab(name){
   active=name;
@@ -294,6 +339,21 @@ function fit(name){
   t.scaler.style.transform='scale('+s.toFixed(4)+')';
 }
 
+function updateStats(){
+  document.getElementById('n-calls').textContent=nCalls;
+  document.getElementById('n-errors').textContent=nErrors;
+  document.getElementById('n-sessions').textContent=Object.keys(terms).length;
+  const counts=Object.entries(toolCounts).sort((a,b)=>b[1]-a[1]);
+  document.getElementById('toolbar-counts').innerHTML=
+    counts.map(([n,c])=>escapeHtml(n)+' <b>'+c+'</b>').join('<span style="color:#333">·</span> ');
+}
+
+function tabLabel(meta){
+  return '<span class="dot"></span>'+escapeHtml(meta.session)
+    +' · '+escapeHtml(meta.command||'')
+    +' <span class="sz">'+(meta.cols||'?')+'×'+(meta.rows||'?')+'</span>';
+}
+
 function ensureSession(meta){
   let t = terms[meta.session];
   if(!t){
@@ -304,7 +364,7 @@ function ensureSession(meta){
       theme:{background:'#000000'}, convertEol:false, disableStdin:true, cursorBlink:false});
     term.open(scaler);
     const tab=document.createElement('div'); tab.className='tab'; tab.id='tab-'+meta.session;
-    tab.textContent=meta.session+' · '+(meta.command||'');
+    tab.innerHTML=tabLabel(meta);
     tab.onclick=()=>selectTab(meta.session); tabsEl.appendChild(tab);
     // mirror raw PTY bytes straight into xterm
     const es=new EventSource('/stream/'+encodeURIComponent(meta.session));
@@ -316,27 +376,53 @@ function ensureSession(meta){
   }
   // Session (PTY) was resized -> match the grid exactly, then re-fit visually.
   if(meta.cols && meta.rows && (meta.cols!==t.meta.cols || meta.rows!==t.meta.rows)){
-    t.term.resize(meta.cols, meta.rows); t.meta=meta; setTimeout(()=>fit(meta.session), 30);
-  }
+    t.term.resize(meta.cols, meta.rows); t.meta={...t.meta,...meta};
+    setTimeout(()=>fit(meta.session), 30);
+  } else { t.meta={...t.meta,...meta}; }
   const tab=document.getElementById('tab-'+meta.session);
-  if(tab) tab.classList.toggle('dead', meta.alive===false);
+  if(tab){ tab.innerHTML=tabLabel(t.meta); tab.classList.toggle('dead', t.meta.alive===false); }
+  updateStats();
 }
 
 // Browser window resize -> rescale the active terminal (grid is untouched).
 new ResizeObserver(()=>{ if(active) fit(active); }).observe(termsEl);
 
+function matchesFilter(div){
+  const q=filterEl.value.trim().toLowerCase();
+  return !q || div.dataset.text.includes(q);
+}
+filterEl.oninput=()=>{
+  for(const div of eventsEl.children) div.style.display=matchesFilter(div)?'':'none';
+};
+document.getElementById('clear').onclick=()=>{eventsEl.innerHTML='';};
+
 function addEvent(ev){
   const div=document.createElement('div');
-  div.className='ev'+(ev.kind==='session'?' sess':'');
-  const args=ev.args?('<span class="ar">'+escapeHtml(JSON.stringify(ev.args))+'</span>'):'';
-  const label = ev.kind==='session'
-    ? ('session '+ev.session+(ev.alive===false?' exited('+(ev.exit_status??'')+')':' started'))
+  const isSess=ev.kind==='session';
+  div.className='ev'+(isSess?' sess':'')+(ev.error?' err':'');
+  const label = isSess
+    ? ('session '+ev.session+(ev.alive===false?' exited ('+(ev.exit_status??'?')+')':' started'))
     : ev.name;
-  div.innerHTML='<span class="tm">'+fmtTime(ev.ts)+'</span><span class="nm">'+escapeHtml(label||'')+'</span> '+args;
+  let html='<span class="tm">'+fmtTime(ev.ts)+'</span><span class="nm">'+escapeHtml(label||'')+'</span>';
+  if(!isSess && ev.session) html+='<span class="sn">'+escapeHtml(ev.session)+'</span>';
+  if(ev.ms!==undefined) html+='<span class="ms">'+ev.ms+'ms</span>';
+  if(ev.error) html+='<span class="er">'+escapeHtml(ev.error)+'</span>';
+  else if(ev.result) html+='<span class="rs">'+escapeHtml(ev.result)+'</span>';
+  if(ev.args && Object.keys(ev.args).length)
+    html+='<span class="ar">'+escapeHtml(JSON.stringify(ev.args,null,1))+'</span>';
+  div.innerHTML=html;
+  div.dataset.text=(label+' '+(ev.session||'')+' '+JSON.stringify(ev.args||'')+' '
+                    +(ev.result||'')+' '+(ev.error||'')).toLowerCase();
+  div.onclick=()=>div.classList.toggle('open');
+  if(!matchesFilter(div)) div.style.display='none';
   eventsEl.insertBefore(div, eventsEl.firstChild);
-  while(eventsEl.children.length>300) eventsEl.removeChild(eventsEl.lastChild);
+  while(eventsEl.children.length>500) eventsEl.removeChild(eventsEl.lastChild);
+  if(!isSess){
+    nCalls++; if(ev.error) nErrors++;
+    toolCounts[ev.name]=(toolCounts[ev.name]||0)+1;
+  }
+  updateStats();
 }
-function escapeHtml(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 
 const evES=new EventSource('/events');
 evES.onopen=()=>statusEl.textContent='● connected';
@@ -345,8 +431,7 @@ evES.onmessage=(e)=>{
   const ev=JSON.parse(e.data);
   if(ev.kind==='ping') return;
   if(ev.kind==='session') ensureSession(ev);
-  if(ev.kind!=='session' || ev.alive===false) addEvent(ev);
-  else addEvent(ev);
+  addEvent(ev);
 };
 </script>
 </body></html>
