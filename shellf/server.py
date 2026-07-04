@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import functools
 import os
+import signal
 import sys
 import time
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from . import keys, observe, shortcuts
+from . import observe, shortcuts
 from .render import Renderer
 from .terminal import TerminalSession
 
@@ -64,18 +65,41 @@ def _summarize_args(kwargs: dict) -> dict:
     return out
 
 
+def _summarize_result(res) -> str:
+    """First line / short form of a tool result, for the dashboard timeline."""
+    if isinstance(res, Image):
+        return "<png image>"
+    if isinstance(res, str):
+        return res.split("\n", 1)[0][:160]
+    s = str(res)
+    return s[:160]
+
+
 def observed(fn):
-    """Publish a tool-call event to the dashboard, preserving the signature so
-    FastMCP still derives the correct schema (inspect.signature follows __wrapped__)."""
+    """Publish a timed tool-call event (args, duration, result/error) to the
+    dashboard, preserving the signature so FastMCP still derives the correct
+    schema (inspect.signature follows __wrapped__)."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        if observe.hub.active:
-            observe.hub.publish_event({
-                "kind": "tool", "name": fn.__name__,
-                "session": kwargs.get("session", "default"),
-                "args": _summarize_args(kwargs),
-            })
-        return fn(*args, **kwargs)
+        if not observe.hub.active:
+            return fn(*args, **kwargs)
+        t0 = time.monotonic()
+        event = {
+            "kind": "tool", "name": fn.__name__,
+            "session": kwargs.get("session", "default"),
+            "args": _summarize_args(kwargs),
+        }
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as e:
+            event["ms"] = round((time.monotonic() - t0) * 1000)
+            event["error"] = f"{type(e).__name__}: {e}"[:200]
+            observe.hub.publish_event(event)
+            raise
+        event["ms"] = round((time.monotonic() - t0) * 1000)
+        event["result"] = _summarize_result(result)
+        observe.hub.publish_event(event)
+        return result
     return wrapper
 
 
@@ -89,7 +113,11 @@ def _get(session: str) -> TerminalSession:
 
 
 def _render(ts: TerminalSession) -> str:
-    """A screen snapshot annotated with cursor + liveness, for the model to read."""
+    """A screen snapshot annotated with cursor + liveness, for the model to read.
+
+    Trailing whitespace and trailing blank rows are trimmed (the header carries the
+    real cols×rows), which cuts the token cost of observe-after-act substantially.
+    """
     cur = ts.cursor()
     status = "running" if ts.alive else f"exited (status={ts.exit_status})"
     m = ts.modes
@@ -104,7 +132,13 @@ def _render(ts: TerminalSession) -> str:
         f"cursor=({cur['x']},{cur['y']})"
         f"{' hidden' if cur['hidden'] else ''}{flags}]"
     )
-    return header + "\n" + ts.snapshot()
+    rows = [line.rstrip() for line in ts.lines()]
+    while rows and not rows[-1]:
+        rows.pop()
+    trimmed = ts.rows - len(rows)
+    body = "\n".join(rows) if rows else "[blank screen]"
+    footer = f"\n[+{trimmed} blank row(s) below]" if trimmed > 0 and rows else ""
+    return header + "\n" + body + footer
 
 
 def _act(ts: TerminalSession, send, quiet: float = 0.12, timeout: float = 2.0) -> str:
@@ -173,19 +207,35 @@ def screenshot(session: str = "default") -> Image:
 
 @mcp.tool()
 @observed
-def type_text(text: str, session: str = "default", settle: float = 0.12) -> str:
+def type_text(
+    text: str,
+    session: str = "default",
+    settle: float = 0.12,
+    paste: bool | None = None,
+) -> str:
     """Type literal text into the program, then return the updated screen.
+
+    paste: how to deliver the text.
+      * None (default) — auto: multi-line text is sent as a bracketed paste when the
+        app has enabled bracketed-paste mode, so editors insert it verbatim instead
+        of autoindent-mangling each line. Single-line text is typed normally.
+      * True — force a bracketed paste (text inserted verbatim, not interpreted as
+        keystrokes; don't use for commands like ":wq").
+      * False — always type raw characters.
 
     Auto-waits for the resulting repaint to settle before returning.
     """
     ts = _get(session)
+    use_paste = paste if paste is not None else ("\n" in text and ts.modes.bracketed_paste)
+    if use_paste:
+        return _act(ts, lambda: ts.send_paste(text), quiet=settle)
     return _act(ts, lambda: ts.send_text(text), quiet=settle)
 
 
 @mcp.tool()
 @observed
 def press(
-    keys_: list[str],
+    keys: list[str],
     session: str = "default",
     settle: float = 0.15,
     step_delay: float = 0.04,
@@ -201,7 +251,7 @@ def press(
     then 'd' — exactly what tmux detach needs. For known apps, `shortcut` is easier.
     """
     ts = _get(session)
-    return _act(ts, lambda: ts.send_sequence(keys_, step_delay=step_delay), quiet=settle)
+    return _act(ts, lambda: ts.send_sequence(keys, step_delay=step_delay), quiet=settle)
 
 
 @mcp.tool()
@@ -241,13 +291,13 @@ def list_shortcuts(app: str | None = None) -> dict:
 
 @mcp.tool()
 @observed
-def define_shortcut(app: str, name: str, keys_: list[str]) -> dict:
+def define_shortcut(app: str, name: str, keys: list[str]) -> dict:
     """Register a custom shortcut so it can be invoked later via `shortcut`.
 
-    keys_ is a token sequence, e.g. ["ctrl+b", "%"] for a tmux vertical split.
+    keys is a token sequence, e.g. ["ctrl+b", "%"] for a tmux vertical split.
     Overrides any built-in of the same app/name. Lives for this server session.
     """
-    shortcuts.define(app, name, keys_)
+    shortcuts.define(app, name, keys)
     return {app: shortcuts.catalog()[app]}
 
 
@@ -281,6 +331,40 @@ def mouse(
 
 @mcp.tool()
 @observed
+def click_text(
+    text: str,
+    session: str = "default",
+    occurrence: int = 1,
+    button: str = "left",
+    settle: float = 0.15,
+) -> str:
+    """Find `text` on screen and click the center of it — no coordinate math needed.
+
+    occurrence: 1-based index when the text appears more than once (top-to-bottom,
+    left-to-right order). Raises with the match list if out of range, and warns when
+    the app has not enabled mouse reporting (the click would be a no-op).
+    """
+    ts = _get(session)
+    hits = ts.find_text(text)
+    if not hits:
+        raise ValueError(f"Text {text!r} not found on screen.\n\n{_render(ts)}")
+    if not (1 <= occurrence <= len(hits)):
+        raise ValueError(
+            f"occurrence={occurrence} out of range: {len(hits)} match(es) at {hits}"
+        )
+    hit = hits[occurrence - 1]
+    # find_text is 0-based; mouse coords are 1-based. Aim at the text's center.
+    x = hit["x"] + len(text) // 2 + 1
+    y = hit["y"] + 1
+    warn = "" if ts.modes.mouse_tracking else (
+        f"[warning: '{ts.command}' has not enabled mouse reporting; this click "
+        f"likely had no effect]\n"
+    )
+    return warn + _act(ts, lambda: ts.send_mouse("click", x, y, button=button), quiet=settle)
+
+
+@mcp.tool()
+@observed
 def wait_for_text(
     text: str,
     session: str = "default",
@@ -294,6 +378,25 @@ def wait_for_text(
     if not ts.wait_for_text(text, timeout=timeout):
         raise TimeoutError(
             f"Text {text!r} did not appear within {timeout}s.\n\n{_render(ts)}"
+        )
+    return _render(ts)
+
+
+@mcp.tool()
+@observed
+def wait_for_text_gone(
+    text: str,
+    session: str = "default",
+    timeout: float = 5.0,
+) -> str:
+    """Wait until `text` disappears from the screen (spinner, "Loading…", a dialog).
+
+    Raises if the text is still visible at timeout, so the agent knows the wait failed.
+    """
+    ts = _get(session)
+    if not ts.wait_for_text_gone(text, timeout=timeout):
+        raise TimeoutError(
+            f"Text {text!r} still on screen after {timeout}s.\n\n{_render(ts)}"
         )
     return _render(ts)
 
@@ -358,14 +461,31 @@ def resize(cols: int, rows: int, session: str = "default") -> str:
     return _act(ts, lambda: ts.set_winsize(rows, cols), quiet=0.15)
 
 
+_SIGNALS = {
+    "term": signal.SIGTERM,
+    "int": signal.SIGINT,
+    "hup": signal.SIGHUP,
+    "quit": signal.SIGQUIT,
+    "kill": signal.SIGKILL,
+}
+
+
 @mcp.tool()
 @observed
-def kill(session: str = "default") -> str:
-    """Terminate the program in a session."""
+def kill(session: str = "default", sig: str = "term") -> str:
+    """Terminate the program in a session and wait for it to actually die.
+
+    sig: term | int | hup | quit | kill. Escalates to SIGKILL automatically if the
+    program ignores the signal (interactive shells ignore SIGTERM), so the session
+    name is immediately free for a new `launch` when this returns.
+    """
     ts = _get(session)
-    ts.kill()
-    time.sleep(0.2)
-    return _render(ts)
+    signum = _SIGNALS.get(sig)
+    if signum is None:
+        raise ValueError(f"Unknown signal {sig!r}. Choose from: {sorted(_SIGNALS)}")
+    dead = ts.kill(signum)
+    prefix = "" if dead else "[warning: process still alive after SIGKILL]\n"
+    return prefix + _render(ts)
 
 
 @mcp.tool()

@@ -117,6 +117,8 @@ class TerminalSession:
         # Live mode tracking (DECCKM, alt-screen, mouse, ...) sniffed from output.
         self.modes = _modes.TerminalModes()
         self._scanbuf = b""
+        # Incomplete trailing escape held back between reads (see modes.strip_unsupported).
+        self._pending = b""
 
         self._lock = threading.RLock()
         self._alive = True
@@ -164,11 +166,14 @@ class TerminalSession:
         """Drain PTY output into the emulator until the program exits."""
         while True:
             try:
-                data = os.read(self.fd, 65536)
+                raw = os.read(self.fd, 65536)
             except OSError:
-                data = b""
-            if not data:
+                raw = b""
+            if not raw:
                 break
+            # Strip sequences pyte would mis-render (kitty CSI-u); an incomplete
+            # trailing escape is carried into the next read so splits still match.
+            data, self._pending = _modes.strip_unsupported(self._pending + raw)
             with self._lock:
                 try:
                     self.stream.feed(data)
@@ -189,7 +194,7 @@ class TerminalSession:
             # Mirror the raw bytes to any observer (outside the lock).
             if self.on_output:
                 try:
-                    self.on_output(data)
+                    self.on_output(raw)
                 except Exception:
                     pass
 
@@ -238,12 +243,35 @@ class TerminalSession:
             except Exception:
                 pass
 
-    def kill(self, sig: int = signal.SIGTERM) -> None:
-        """Signal the program to terminate."""
+    def kill(self, sig: int = signal.SIGTERM, timeout: float = 3.0) -> bool:
+        """Signal the program and wait for it to actually die.
+
+        Escalates to SIGKILL if the process ignores the first signal — interactive
+        shells ignore SIGTERM, which used to leave "zombie" sessions that blocked
+        relaunching the same session name. Returns True once the process is dead.
+        """
+        if not self._alive:
+            return True
         try:
             os.kill(self.pid, sig)
         except ProcessLookupError:
-            pass
+            return True
+        if self.wait_for_exit(timeout):
+            return True
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
+        return self.wait_for_exit(2.0)
+
+    def wait_for_exit(self, timeout: float = 5.0, poll: float = 0.05) -> bool:
+        """Block until the program exits (EOF on the PTY) or timeout. True if dead."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self._alive:
+                return True
+            time.sleep(poll)
+        return not self._alive
 
     # ------------------------------------------------------------------ #
     # Observation
@@ -303,6 +331,20 @@ class TerminalSession:
                     return any(needle in line for line in self.screen.display)
             time.sleep(poll)
         return False
+
+    def wait_for_text_gone(self, needle: str, timeout: float = 5.0, poll: float = 0.05) -> bool:
+        """Block until `needle` is no longer on screen (spinner/“Loading…” cleared)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if not any(needle in line for line in self.screen.display):
+                    return True
+            if not self._alive:
+                with self._lock:
+                    return not any(needle in line for line in self.screen.display)
+            time.sleep(poll)
+        with self._lock:
+            return not any(needle in line for line in self.screen.display)
 
     def version(self) -> int:
         """Monotonic repaint counter — snapshot it before an action to detect change."""
@@ -372,6 +414,17 @@ class TerminalSession:
     def send_text(self, text: str) -> None:
         """Type literal text (UTF-8) as if at the keyboard."""
         self._write(text.encode("utf-8"))
+
+    def send_paste(self, text: str) -> None:
+        """Send text as a bracketed paste (ESC[200~ … ESC[201~).
+
+        When the app has enabled bracketed-paste mode (modes.bracketed_paste),
+        editors insert the payload verbatim — no autoindent, no keybinding
+        interpretation — which is what makes multi-line input into vim/nano/REPLs
+        reliable. Newlines are sent as CR, matching what real terminals paste.
+        """
+        payload = text.replace("\r\n", "\n").replace("\n", "\r").encode("utf-8")
+        self._write(b"\x1b[200~" + payload + b"\x1b[201~")
 
     def send_key(self, key: bytes) -> None:
         """Write a pre-resolved key byte sequence (see keys.resolve)."""

@@ -40,6 +40,35 @@ _RESP_PRIMARY_DA = b"\x1b[?1;2c"      # VT100 with advanced video
 _RESP_SECONDARY_DA = b"\x1b[>0;95;0c"  # "xterm-ish", version 95
 _RESP_DSR_OK = b"\x1b[0n"
 
+# ---- Sequences pyte mis-parses and would render as literal text ----
+# Kitty keyboard protocol (progressive enhancement): CSI = flags ; mode u (set),
+# CSI > flags u (push), CSI < n u (pop), CSI ? u (query). pyte's CSI parser aborts
+# on the '='/'>'/'<' markers and prints the tail — the "1;1u" garbage seen with
+# modern TUIs (Claude Code, neovim, fish). We strip them before feeding pyte.
+#
+# We deliberately do NOT answer the CSI ? u query: a terminal without the protocol
+# stays silent, and apps detect support by racing that query against a DA query
+# (which we do answer) — so they fall back to legacy key encoding correctly.
+_KITTY_SEQ = re.compile(rb"\x1b\[[=><?][0-9;]*u")
+# A trailing, possibly-incomplete escape sequence to carry over to the next read so
+# a sequence split across read() boundaries is still recognized. Bounded so a long
+# legitimate parameter string (e.g. truecolor SGR) is passed through instead.
+_PARTIAL_ESC = re.compile(rb"\x1b(?:\[[0-9;=><?]{0,12})?$")
+
+
+def strip_unsupported(data: bytes) -> tuple[bytes, bytes]:
+    """Remove escape sequences pyte would mis-render as literal text.
+
+    Returns (clean, holdback). `holdback` is an incomplete trailing escape that the
+    caller should prepend to the next chunk. Holding back a partial sequence is safe:
+    pyte could not have rendered an incomplete escape anyway.
+    """
+    clean = _KITTY_SEQ.sub(b"", data)
+    m = _PARTIAL_ESC.search(clean)
+    if m:
+        return clean[: m.start()], clean[m.start():]
+    return clean, b""
+
 
 class TerminalModes:
     """Live view of the modes the program has enabled, updated from its output."""
