@@ -38,6 +38,8 @@ _DEFAULT_FG = (216, 216, 216)
 _DEFAULT_BG = (12, 12, 12)
 _CURSOR = (220, 220, 60)
 _MOUSE = (255, 80, 80)
+_GRID = (70, 70, 90)
+_GRID_LABEL = (120, 120, 160)
 
 _FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 _FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
@@ -72,11 +74,17 @@ class Renderer:
         self.cell_h = font_size + 6
         self.ascent = bbox[1]
 
-    def render(self, screen, cursor: dict, mouse: tuple | None = None) -> bytes:
+    def render(self, screen, cursor: dict, mouse: tuple | None = None,
+               scale: float = 1.0, grid: bool = False) -> bytes:
         """Render the screen to PNG bytes.
 
         cursor: {"x","y","hidden"} (0-based cell coords).
         mouse:  (x, y) 1-based cell coords of the last mouse action, or None.
+        scale:  final image scale. An 80x24 terminal is ~1280x528px, which costs the
+                model on the order of a thousand image tokens; 0.5 quarters that and
+                is still legible for layout questions.
+        grid:   overlay a labelled 1-based column/row ruler, so the model can read
+                coordinates for `mouse` off the picture instead of counting cells.
         """
         cols, rows = screen.columns, screen.lines
         w, h = cols * self.cell_w, rows * self.cell_h
@@ -117,6 +125,30 @@ class Renderer:
             draw.line([mx - r, my, mx + r, my], fill=_MOUSE, width=1)
             draw.line([mx, my - r, mx, my + r], fill=_MOUSE, width=1)
 
+        if grid:
+            self._draw_grid(draw, cols, rows, w, h)
+
+        if scale and scale != 1.0:
+            img = img.resize(
+                (max(1, round(w * scale)), max(1, round(h * scale))),
+                Image.LANCZOS,
+            )
+
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
+
+    def _draw_grid(self, draw, cols: int, rows: int, w: int, h: int) -> None:
+        """Faint ruler lines every 10 cells, labelled with 1-based coordinates.
+
+        Mouse tools take 1-based (x, y), so the labels are the numbers to pass —
+        no off-by-one arithmetic for the model to get wrong.
+        """
+        for x in range(10, cols, 10):
+            px = x * self.cell_w
+            draw.line([px, 0, px, h], fill=_GRID, width=1)
+            draw.text((px + 2, 1), str(x + 1), font=self.font, fill=_GRID_LABEL)
+        for y in range(5, rows, 5):
+            py = y * self.cell_h
+            draw.line([0, py, w, py], fill=_GRID, width=1)
+            draw.text((2, py + 1), str(y + 1), font=self.font, fill=_GRID_LABEL)
