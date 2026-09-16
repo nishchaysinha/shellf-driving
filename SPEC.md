@@ -21,6 +21,15 @@ These are not features — they're places where the current engine can silently 
 > scrollback via `HistoryScreen` (`read_history`); Alt/Meta keys. New MCP tools:
 > `wait_for_stable`, `read_history`, `get_modes`. See `tests/test_phase1.py`, `tests/test_decckm_e2e.py`.
 >
+> **✅ Phase 3 shipped** (token economy — the cost of *looking*): `view` on every
+> screen-returning tool (`auto`/`screen`/`diff`/`quiet`/`none`), where `auto` renders both
+> a diff and a full screen and returns the smaller, so a diff is never a regression ·
+> batched **`run`** tool ("verb:payload" steps, one screen for N actions) · `launch(env=)`
+> plus `SHELLF_*` server config · region reads · `screenshot(scale=, grid=)` ·
+> `wait_for_text(regex=True)` · double/triple-click, drag, raw bytes. Measured −79% chars
+> from `auto` alone and 8× fewer round trips with `run`, across vim/less/python/bash/
+> htop/btop/nano/tmux (`bench/token_bench.py`). See `tests/test_phase3.py`.
+>
 > **✅ Phase 2 shipped** (fixes surfaced by long real-agent sessions): bracketed-paste
 > `type_text` (auto for multi-line) · kitty CSI-u sequences stripped (no `1;1u` screen
 > garbage from Claude Code/neovim) · `kill` waits + escalates past ignored SIGTERM ·
@@ -46,11 +55,11 @@ These are not features — they're places where the current engine can silently 
 | Per-cell style query | 🟡 | P1 | `cell()` on engine; not yet an MCP tool |
 | Cursor position / visibility | ✅ | — | `cursor()` |
 | Find text → coordinates | ✅ | — | `find_text` |
-| Region / bounding-box read | ⬜ | P1 | Read a sub-rectangle (e.g. a status bar or a pane) |
+| Region / bounding-box read | ✅ | — | `snapshot(region=[x,y,w,h])` |
 | **Scrollback / history buffer** | ✅ | — | `HistoryScreen` + `read_history` exposes output that scrolled off (verified). |
-| Screen **diff** since last snapshot | ⬜ | P1 | Return only changed lines/cells → token-efficient, shows the model *what just happened* |
+| Screen **diff** since last snapshot | ✅ | — | `view=diff`; `view=auto` picks diff-or-screen by measured size |
 | Trim/compact representation | ✅ | — | every `_render` strips trailing blank rows/cols |
-| Grid-coordinate overlay on screenshot | ⬜ | P1 | Ruler/gridlines so the model can pick click coords accurately |
+| Grid-coordinate overlay on screenshot | ✅ | — | `screenshot(grid=True)`, 1-based labels; `scale=` cuts image tokens |
 | Terminal **title** capture (OSC 0/2) | ⬜ | P2 | Apps set the title to convey state |
 | **Hyperlinks** (OSC 8) capture | ⬜ | P2 | Modern TUIs emit clickable links |
 | Bell / alert detection | ⬜ | P2 | `\a` often signals errors/completion |
@@ -68,12 +77,12 @@ These are not features — they're places where the current engine can silently 
 | **Alt / Meta modifier** | ✅ | — | `alt+x` = `ESC` prefix. Common in shells/emacs; no support yet |
 | Shift / Ctrl / Alt + arrows, Home/End, nav | ✅ | — | `ESC[1;<mod><final>` encodings; unknown combos RAISE (don't type garbage into docs) |
 | Shift/Ctrl + function keys | ⬜ | P2 | Modified F-keys; lower frequency |
-| Mouse **drag** helper | ⬜ | P1 | press→move(s)→release in one call (text selection, sliders) |
-| Double / triple click | ⬜ | P1 | Word/line selection |
+| Mouse **drag** helper | ✅ | — | `mouse(action="drag", to_x, to_y)` — real motion events between the ends |
+| Double / triple click | ✅ | — | `mouse(action="double_click"/"triple_click")` |
 | Mouse modifiers (ctrl/shift+click) | ⬜ | P2 | Modifier bits in the SGR button code |
 | **Bracketed paste** | ✅ | — | `type_text` auto-pastes multi-line text when the app enabled mode 2004; `paste` param to force |
 | Human-like typing cadence | ⬜ | P2 | Per-char delay; some TUIs drop fast input |
-| Raw byte injection | ⬜ | P1 | Escape hatch: send arbitrary bytes |
+| Raw byte injection | ✅ | — | `send_bytes`; `run(["raw:\\x1b[A"])` |
 | Focus in/out events | ⬜ | P2 | `ESC[I`/`ESC[O`; some apps redraw on focus |
 
 ## 3. Synchronization — waiting reliably
@@ -83,7 +92,7 @@ These are not features — they're places where the current engine can silently 
 | `wait_for_text` | ✅ | — | |
 | **`wait_for_stable`** (idle N ms) | ✅ | — | See §0 |
 | `wait_for_text_gone` | ✅ | — | tool + engine method |
-| `wait_for_regex` | ⬜ | P1 | Match patterns, not just substrings |
+| `wait_for_regex` | ✅ | — | `wait_for_text(regex=True)`; engine `wait_for_regex` returns the match |
 | `wait_for_cursor` (position) | ⬜ | P2 | Some apps signal readiness via cursor |
 | `wait_for_exit` | ✅ | — | engine method; `kill` waits for real death before returning |
 | Auto-wait baked into actions | ✅ | — | Every action tool waits for its own repaint to settle (baseline-version) |
@@ -92,7 +101,7 @@ These are not features — they're places where the current engine can silently 
 
 | Capability | Status | Pri | Notes |
 | --- | --- | --- | --- |
-| Launch w/ args, env, cwd, size | ✅ | — | `launch` |
+| Launch w/ args, env, cwd, size | ✅ | — | `launch(env={...})` + `SHELLF_ENV`; TERM forced to xterm-256color |
 | Multiple named sessions | ✅ | — | |
 | Kill / signal | ✅ | — | `sig: term|int|hup|quit|kill`, waits for death, auto-escalates to SIGKILL (shells ignore SIGTERM) |
 | Restart session | ⬜ | P2 | Relaunch same spec |
@@ -132,7 +141,7 @@ These are not features — they're places where the current engine can silently 
 | --- | --- | --- | --- |
 | Observe-after-act (return screen each action) | ✅ | — | Every tool returns the new screen |
 | High-level `click_text("OK")` | ✅ | — | occurrence picker; warns when mouse reporting is off |
-| Token-efficient snapshots | ✅ | — | trailing blanks/rows trimmed on every returned screen; diff mode still ⬜ |
+| Token-efficient snapshots | ✅ | — | trimming + `view` modes; measured −79% chars (`bench/token_bench.py`) |
 | Annotated screenshots (coord grid) | ⬜ | P1 | Helps the model aim the mouse |
 | Semantic/“accessibility” extraction | ⬜ | P2 | Detect menus/buttons/tables as structures — hard, high value |
 | Per-action auto-retry + auto-wait | ⬜ | P1 | Fewer flaky agent steps |
@@ -153,11 +162,11 @@ These are not features — they're places where the current engine can silently 
 
 | Capability | Status | Pri | Notes |
 | --- | --- | --- | --- |
-| MCP server | ✅ | — | 19 tools |
+| MCP server | ✅ | — | 20 tools |
 | Python library API | ✅ | — | `TerminalSession` |
 | pip / editable install | ✅ | — | |
 | Standalone CLI (manual poke/REPL) | ⬜ | P1 | Drive a session by hand for debugging |
-| Config (default size/TERM/timeouts) | ⬜ | P2 | Central settings |
+| Config (default size/TERM/timeouts) | ✅ | — | `config.py`: `SHELLF_VIEW`/`COLS`/`ROWS`/`MAX_ROWS`/`ENV`/`SHOT_SCALE` |
 | **Live observability dashboard** | ✅ | — | `observe.py`: localhost web UI, xterm.js byte-mirror per session + tool-call timeline (SHELLF_OBSERVE_PORT). Browser resize = CSS scale-to-fit; session resize = grid event |
 | Structured logging / verbosity | 🟡 | P2 | The observe event stream is a start; no file logger yet |
 | pytest plugin (fixtures) | ⬜ | P2 | For the testing use case |
@@ -174,6 +183,8 @@ These are not features — they're places where the current engine can silently 
 - **Phase 2 — Agent ergonomics (P1).** `click_text` · screen diff + compaction ·
   grid-annotated screenshots · drag/double-click · bracketed paste · `wait_for_*`
   family · auto-wait in actions · expose `cell`/region reads.
-- **Phase 3 — Tooling & scale (P1/P2).** asciinema recording + action trace · CLI ·
+- **Phase 3 — Token economy (shipped).** `view` modes · batched `run` · env/config ·
+  region reads · screenshot scale+grid · regex waits · gestures · raw bytes.
+- **Phase 4 — Tooling & scale (P1/P2).** asciinema recording + action trace · CLI ·
   signal control · backpressure/cleanup · codegen/replay · pytest plugin.
-- **Phase 4 — Reach (P2).** semantic extraction · remote targets · Windows · sixel.
+- **Phase 5 — Reach (P2).** semantic extraction · remote targets · Windows · sixel.

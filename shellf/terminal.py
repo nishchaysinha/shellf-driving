@@ -20,6 +20,7 @@ import copy
 import fcntl
 import os
 import pty
+import re
 import signal
 import struct
 import termios
@@ -139,11 +140,14 @@ class TerminalSession:
         if pid == 0:
             # ---- child process: become the target program ----
             child_env = os.environ.copy()
-            child_env.setdefault("TERM", "xterm-256color")
+            # The parent's TERM describes the MCP client's terminal (often unset or
+            # "dumb"), not the PTY we just created — which really is an xterm. Force
+            # it, so TUIs get full capabilities; an explicit env= still wins.
+            child_env["TERM"] = "xterm-256color"
             child_env["LINES"] = str(rows)
             child_env["COLUMNS"] = str(cols)
             if env:
-                child_env.update(env)
+                child_env.update({k: str(v) for k, v in env.items()})
             try:
                 if cwd:
                     os.chdir(cwd)
@@ -346,6 +350,32 @@ class TerminalSession:
         with self._lock:
             return not any(needle in line for line in self.screen.display)
 
+    def wait_for_regex(
+        self, pattern: str, timeout: float = 5.0, poll: float = 0.05, flags: int = 0
+    ) -> str | None:
+        """Block until `pattern` matches somewhere on screen; return the matched text.
+
+        Matched against each row and against the whole screen (so a pattern may span
+        rows). Returns None on timeout. Substring search covers most cases, but status
+        lines are frequently *shaped* rather than fixed — "3 of 17", "ERROR 5xx",
+        "[####    ] 42%" — and only a regex can wait for those.
+        """
+        rx = re.compile(pattern, flags)
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                display = list(self.screen.display)
+            for line in display:
+                m = rx.search(line)
+                if m:
+                    return m.group(0)
+            m = rx.search("\n".join(display))
+            if m:
+                return m.group(0)
+            if not self._alive or time.monotonic() >= deadline:
+                return None
+            time.sleep(poll)
+
     def version(self) -> int:
         """Monotonic repaint counter — snapshot it before an action to detect change."""
         with self._lock:
@@ -456,6 +486,14 @@ class TerminalSession:
                     )
                 self.send_text(token)
 
+    def send_bytes(self, data: bytes) -> None:
+        """Write raw bytes straight to the PTY — the escape hatch.
+
+        For sequences this library has no name for (an exotic key encoding, a device
+        control string, a protocol probe). Nothing is interpreted or validated.
+        """
+        self._write(data)
+
     def send_mouse(
         self,
         action: str,
@@ -465,7 +503,8 @@ class TerminalSession:
     ) -> None:
         """Send an SGR(1006) mouse event at 1-based column `x`, row `y`.
 
-        action: click | press | release | move | scroll_up | scroll_down
+        action: click | double_click | triple_click | press | release | move |
+                scroll_up | scroll_down
         """
         col, row = x, y  # SGR mouse coords are 1-based
         self.last_mouse = (x, y)
@@ -475,9 +514,15 @@ class TerminalSession:
 
         btn = _MOUSE_BUTTONS.get(button, 0)
 
-        if action == "click":
-            self._write(seq(btn, "M"))   # press
-            self._write(seq(btn, "m"))   # release
+        if action in ("click", "double_click", "triple_click"):
+            # Terminals report repeated clicks as repeated press/release pairs; the
+            # application does the timing. Keep the gap short so it counts as one
+            # gesture (word select on double, line select on triple).
+            for i in range({"click": 1, "double_click": 2, "triple_click": 3}[action]):
+                if i:
+                    time.sleep(0.03)
+                self._write(seq(btn, "M"))   # press
+                self._write(seq(btn, "m"))   # release
         elif action == "press":
             self._write(seq(btn, "M"))
         elif action == "release":
@@ -490,3 +535,21 @@ class TerminalSession:
             self._write(seq(_SCROLL_DOWN, "M"))
         else:
             raise ValueError(f"Unknown mouse action: {action!r}")
+
+    def send_drag(
+        self, x1: int, y1: int, x2: int, y2: int, button: str = "left", steps: int = 4
+    ) -> None:
+        """Press at (x1,y1), move across in `steps` reports, release at (x2,y2).
+
+        One call for the whole gesture, because the intermediate motion events are not
+        optional: apps that implement selection or a slider track the drag, and a bare
+        press-then-release at the far end reads as two unrelated clicks.
+        """
+        self.send_mouse("press", x1, y1, button=button)
+        for i in range(1, steps + 1):
+            mx = round(x1 + (x2 - x1) * i / steps)
+            my = round(y1 + (y2 - y1) * i / steps)
+            time.sleep(0.02)
+            self.send_mouse("move", mx, my, button=button)
+        time.sleep(0.02)
+        self.send_mouse("release", x2, y2, button=button)

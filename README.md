@@ -29,7 +29,9 @@ shellf/
   modes.py      DEC private-mode sniffer + terminal-query auto-responder
   keys.py       key-name → terminal escape-sequence map (DECCKM-aware)
   shortcuts.py  named prefix-chord registry (tmux, screen, emacs, vim, …)
-  render.py     screen → PNG (colors, bold, cursor outline, mouse marker)
+  view.py       response shaping (auto / screen / diff / quiet / none)
+  config.py     env-var configuration (SHELLF_VIEW, SHELLF_ENV, …)
+  render.py     screen → PNG (colors, bold, cursor outline, mouse marker, grid)
   observe.py    live observability dashboard (SSE + xterm.js byte mirror)
   server.py     FastMCP server exposing the tools
 ```
@@ -46,8 +48,8 @@ shellf/
 
 ## MCP tools
 
-`launch` · `snapshot` · `screenshot` · `type_text` · `press` · `mouse` · `click_text` ·
-`shortcut` · `list_shortcuts` · `define_shortcut` ·
+`launch` · `snapshot` · `screenshot` · `type_text` · `press` · **`run`** · `mouse` ·
+`click_text` · `shortcut` · `list_shortcuts` · `define_shortcut` ·
 `wait_for_text` · `wait_for_text_gone` · `wait_for_stable` · `find_text` ·
 `read_history` · `get_modes` · `resize` · `kill` · `list_sessions`
 
@@ -87,6 +89,95 @@ modern TUIs through the server:
 - **`wait_for_text_gone`**: wait for a spinner/“Loading…” to clear.
 - **Token-efficient snapshots**: trailing whitespace and blank rows are trimmed from
   every returned screen (the header keeps the true cols×rows).
+
+### Token economy (Phase 3)
+
+Driving a TUI is a loop of *act, then look*, and the looking is what costs money. Every
+action used to return the whole grid, so a 10-step edit shipped ten near-identical
+80×24 screens into the conversation. Two changes fix that.
+
+**1. `view` — return what changed, not everything.** Every screen-returning tool takes
+`view`, and the server-wide default is `SHELLF_VIEW`:
+
+| `view` | Returns |
+| --- | --- |
+| `auto` *(default)* | the changed rows, or the full screen — **whichever is actually smaller** |
+| `screen` | the full trimmed grid (the old behavior) |
+| `diff` | only rows that changed since you last saw the screen |
+| `quiet` | the header alone: size, liveness, cursor, how many rows moved |
+| `none` | `ok` |
+
+`auto` measures both renderings and returns the shorter one, so a diff can never be a
+regression — only a win. That matters more than it sounds: on a sparse vim screen the
+row-number prefixes make a diff *bigger* than the screen it describes, and on htop —
+which repaints every row on a timer — a diff is pure noise. `auto` quietly does the
+right thing in both cases, and the agent never has to know which kind of app it is driving.
+
+A `quiet` view discloses nothing, so it does not advance the diff baseline: after a run
+of quiet steps the next `diff` still reports everything that happened while you weren't
+looking.
+
+**2. `run` — several actions, one screen.** Five tool calls means five screens in the
+transcript, four of which were only a stepping stone. `run` takes `"verb:payload"` steps
+and returns the final state once:
+
+```python
+run(["press:i", "type:hello world", "press:escape", "type::wq", "press:enter"])
+```
+
+Verbs: `type` · `paste` · `press` · `click` · `mouse` · `wait` · `waitgone` · `regex` ·
+`stable` · `sleep` · `raw`. It stops at the first failing step and tells you which one,
+so a half-applied sequence is never silent.
+
+**Measured on this machine** (`bench/token_bench.py`, real programs, eight realistic
+tasks — vim, less, python, bash, htop, btop, nano, tmux):
+
+| | characters returned | vs. before |
+| --- | --- | --- |
+| before (full screen every call) | 59,052 | — |
+| `view=auto` | 12,594 | **−79%** |
+| `view=auto` + batched `run` | 11,992 | **−80%**, and 8× fewer round trips |
+
+The per-scenario range for `auto` is −58% (a short bash session, already cheap) to −86%
+(btop, which redraws constantly). Batching saves fewer *characters* than it looks —
+`auto` already collapsed the intermediate screens — but it removes the round trips
+themselves, which is where the model's own reasoning tokens go.
+
+### Environment control
+
+`launch(env={...})` passes environment straight to the program — the other lever on
+cost and predictability, since the cheapest screen is the one the app never draws:
+
+```python
+launch("git", ["log"], env={"PAGER": "cat", "NO_COLOR": "1"})
+```
+
+`SHELLF_ENV="NO_COLOR=1,PAGER=cat"` applies a set to *every* launch, so the agent pays
+zero tokens per call for it. `TERM` now defaults to `xterm-256color` regardless of what
+terminal the MCP client is running in — the PTY really is an xterm — and an explicit
+`env={"TERM": ...}` still wins.
+
+Other `SHELLF_*` knobs: `SHELLF_VIEW`, `SHELLF_COLS`/`SHELLF_ROWS`, `SHELLF_MAX_ROWS`
+(cap rows per response, eliding the middle), `SHELLF_SHOT_SCALE`. `get_modes` reports the
+effective config.
+
+```bash
+claude mcp add shellf-driving \
+  -e SHELLF_VIEW=auto -e SHELLF_ENV=NO_COLOR=1,PAGER=cat \
+  -- "$PWD/.venv/bin/python" -m shellf.server
+```
+
+### Also in Phase 3
+
+- **Region reads**: `snapshot(region=[x, y, w, h])` for one status bar or one tmux pane.
+- **Cheaper screenshots**: `screenshot(scale=0.5)` quarters the image tokens;
+  `screenshot(grid=True)` overlays a labelled 1-based ruler so the model can read click
+  coordinates off the picture instead of counting cells.
+- **`wait_for_text(..., regex=True)`**: status lines are usually shaped, not fixed —
+  `"step \d+ of \d+"`, `"\[#+\s*\] \d+%"`.
+- **Mouse gestures**: `double_click` (word), `triple_click` (line), and `drag` with
+  `to_x`/`to_y` — one call, because apps track the motion between the ends.
+- **Raw bytes**: `run(["raw:\\x1b[A"])` / `send_bytes` for sequences with no name here.
 
 ### Sequential shortcuts (prefix chords)
 
@@ -159,6 +250,7 @@ pytest
 | `tests/test_shortcuts.py` | resize reflow + tmux prefix chords |
 | `tests/test_phase1.py` | mode-sniffer, query responder, wait_for_stable, scrollback |
 | `tests/test_phase2.py` | kitty CSI-u stripping, bracketed paste, kill escalation |
+| `tests/test_phase3.py` | view modes, env passthrough, batched `run`, regex waits, gestures |
 | `tests/test_decckm_e2e.py` | proves arrows arrive as `ESC O x` under DECCKM |
 | `tests/test_mcp_client.py` / `test_mcp_drive.py` | full round-trip over MCP stdio |
 | `tests/test_observe.py` | dashboard: schema integrity + live SSE data flow |

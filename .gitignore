@@ -19,3 +19,6 @@ venv/
 *.png
 *.swn
 *.swm
+
+# vim swap files left behind when the test suite launches vim in the repo root
+.sw[a-p]
